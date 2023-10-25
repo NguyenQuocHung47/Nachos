@@ -1,4 +1,4 @@
-﻿// exception.cc 
+// exception.cc 
 //	Entry point into the Nachos kernel from user programs.
 //	There are two kinds of things that can cause control to
 //	transfer back to here from user code:
@@ -25,11 +25,14 @@
 #include "main.h"
 #include "syscall.h"
 #include "ksyscall.h"
+#include "filesys.h"
 
-#define MaxFileLen 32
+#define MaxFileLength 32
 #define MaxFileDescriptors 20
 
-FileDescriptor fileDescriptorTable[MaxFileDescriptors];
+int fileDescriptorTable[MaxFileDescriptors];
+OpenFile *fileTable[MaxFileDescriptors];
+
 //----------------------------------------------------------------------
 // ExceptionHandler
 // 	Entry point into the Nachos kernel.  Called when a user program
@@ -53,187 +56,231 @@ FileDescriptor fileDescriptorTable[MaxFileDescriptors];
 //	is in machine.h.
 //----------------------------------------------------------------------
 
-// Hàm đảm bảo tăng thanh ghi PC để tiếp tục thực hiện chương trình
-void IncreasePC() {
-	int pc = kernel->machine->ReadRegister(PCReg);
-	kernel->machine->WriteRegister(PrevPCReg, pc);
-	kernel->machine->WriteRegister(PCReg, pc + 4);
-	kernel->machine->WriteRegister(NextPCReg, pc + 8);
+//
+void IncreasePC()
+{
+	int counter = kernel->machine->ReadRegister(PCReg);
+   	kernel->machine->WriteRegister(PrevPCReg, counter);
+    counter = kernel->machine->ReadRegister(NextPCReg);
+    kernel->machine->WriteRegister(PCReg, counter);
+   	kernel->machine->WriteRegister(NextPCReg, counter + 4);
 }
 
-// Hàm sao chép một chuỗi từ user space vào kernel space 
-bool copyStringFromUser(int userAddr, char* kernelBuf, int maxBytes) {
-	int bytesRead = 0;
-	int value;
+//
+char* User2System(int virtAddr,int limit) { 
+	int i;// index 
+	int oneChar; 
+	char* kernelBuf = NULL; 
+	kernelBuf = new char[limit +1];//need for terminal string 
+	if (kernelBuf == NULL) 
+	return kernelBuf; 
+	memset(kernelBuf,0,limit+1); 
+	//printf("\n Filename u2s:"); 
+	for (i = 0 ; i < limit ;i++) 
+	{ 
+	kernel->machine->ReadMem(virtAddr+i,1,&oneChar); 
+	kernelBuf[i] = (char)oneChar; 
+	//printf("%c",kernelBuf[i]); 
+	if (oneChar == 0) 
+	break; 
+	} 
+	return kernelBuf; 
+} 
 
-	while (bytesRead < maxBytes - 1) { // Trừ 1 để dự trữ chỗ cho null-terminated character
-		if (!machine->ReadMem(userAddr + bytesRead, 1, &value)) { // Dùng ReadMem
-			// Lỗi khi đọc từ user space
-			return false;
-		}
-
-		kernelBuf[bytesRead] = (char)value;
-
-		if (kernelBuf[bytesRead] == '\0') {
-			// Kết thúc chuỗi null-terminated
-			return true;
-		}
-
-		bytesRead++;
-	}
-
-	// Đảm bảo kết thúc chuỗi bằng null-terminated nếu không đủ không gian trong kernelBuf
-	kernelBuf[bytesRead] = '\0';
-
-	return true;
+//
+int System2User(int virtAddr,int len,char* buffer) { 
+	if (len < 0) return -1; 
+	if (len == 0)return len; 
+	int i = 0; 
+	int oneChar = 0 ; 
+	do{ 
+	oneChar= (int) buffer[i]; 
+	kernel->machine->WriteMem(virtAddr+i,1,oneChar); 
+	i ++; 
+	}while(i < len && oneChar != 0); 
+	return i; 
 }
 
 
-
-// 
-void
-ExceptionHandler(ExceptionType which) {
-    int type = kernel->machine->ReadRegister(2);
+void ExceptionHandler(ExceptionType which) {
+    int type;
+	type = kernel->machine->ReadRegister(2);
 
     DEBUG(dbgSys, "Received Exception " << which << " type: " << type << "\n");
+	
 
     switch (which) {
-		case SyscallException:
-			switch(type) {
-				//Halt
-				case SC_Halt:
-					DEBUG(dbgSys, "Shutdown, initiated by user program.\n");
-					SysHalt();
+    case SyscallException:
+      	switch(type) {
+			//Halt
+			case SC_Halt:
+				DEBUG(dbgSys, "Shutdown, initiated by user program.\n");
+				SysHalt();
 
-					ASSERTNOTREACHED();
-					break;
+				ASSERTNOTREACHED();
+				break;
+			//Read string 
+			/*case SC_ReadString:
+				int virtAddr, length;
+				char* buffer;
+				virtAddr = kernel->machine->ReadRegister(4); 
+				length = kernel->machine->ReadRegister(5); 
+				buffer = User2System(virtAddr, length); 
+				gSynchConsole->Read(buffer, length); 
+				System2User(virtAddr, length, buffer);
+				delete buffer; 
+				IncreasePC(); 
+				return;
+				break;
+
+			//Print string
+			case SC_PrintString:
+				int virtAddr;
+				char* buffer = new char[255];
+				virtAddr = kernel->machine->ReadRegister(4); 
+				buffer = User2System(virtAddr, 255); 
+				int length = 0;
+					while (buffer[length] != 0){
+						gSynchConsole->Write(buffer + length, 1);
+						length++;
+					}
+				buffer[length] = '\n';
+				gSynchConsole->Write(buffer + length, 1);
+				delete[] buffer; 
+				break;
+            
+			//Print char
+			case SC_PrintChar:
+				char c = (char)kernel->machine->ReadRegister(4); 
+				gSynchConsole->Write(&c, 1); 
+				break;*/
+			
+			//Add
+			case SC_Add:
+				DEBUG(dbgSys, "Add " << kernel->machine->ReadRegister(4) << " + " << kernel->machine->ReadRegister(5) << "\n");
 				
-				//Add
-				case SC_Add:
-					DEBUG(dbgSys, "Add " << kernel->machine->ReadRegister(4) << " + " << kernel->machine->ReadRegister(5) << "\n");
-	
-					/* Process SysAdd Systemcall*/
-					int result;
-					result = SysAdd(/* int op1 */(int)kernel->machine->ReadRegister(4),
-							/* int op2 */(int)kernel->machine->ReadRegister(5));
+				/* Process SysAdd Systemcall*/
+				int result;
+				result = SysAdd(/* int op1 */(int)kernel->machine->ReadRegister(4),
+						/* int op2 */(int)kernel->machine->ReadRegister(5));
 
-					DEBUG(dbgSys, "Add returning with " << result << "\n");
-					/* Prepare Result */
-					kernel->machine->WriteRegister(2, (int)result);
-	
-					/* Modify return point */
-					{
-					  /* set previous programm counter (debugging only)*/
-					  kernel->machine->WriteRegister(PrevPCReg, kernel->machine->ReadRegister(PCReg));
-
-					  /* set programm counter to next instruction (all Instructions are 4 byte wide)*/
-					  kernel->machine->WriteRegister(PCReg, kernel->machine->ReadRegister(PCReg) + 4);
-	  
-					  /* set next programm counter for brach execution */
-					  kernel->machine->WriteRegister(NextPCReg, kernel->machine->ReadRegister(PCReg)+4);
-					}
-					return;
-	
-					ASSERTNOTREACHED();
-					break;
-
-				// Create file
-				case CS_Create:
-					int userFilenameAddr = kernel->machine->ReadRegister(4); // Lấy địa chỉ file
-					char filename[MaxFileLen];
-
-					if (!copyStringFromUser(userFilenameAddr, filename, MaxFileLen)) {
-						// Nếu sao chép dữ liệu từ user space thất bại
-						kernel->machine->WriteRegister(2, -1);
-						break;
-					}
-
-					// -> tạo file từ Nachos FileSystem Object
-					OpenFile* newFile = fileSystem->Create(filename);
-
-					if (newFile != NULL) {
-						kernel->machine->WriteRegister(2, 0); // Thành công: 0
-					}
-					else {
-						kernel->machine->WriteRegister(2, -1); // Lỗi: -1
-					}
-						
-					IncreasePC();
-					break;
+				DEBUG(dbgSys, "Add returning with " << result << "\n");
+				/* Prepare Result */
+				kernel->machine->WriteRegister(2, (int)result);
 				
-				// Open file
-				case SC_Open:
-					int userFilenameAddr = kernel->machine->ReadRegister(4);
-					int fileType = kernel->machine->ReadRegister(5);
-					char filename[MaxFileLen];
+				/* Modify return point */
+				{
+				/* set previous programm counter (debugging only)*/
+				kernel->machine->WriteRegister(PrevPCReg, kernel->machine->ReadRegister(PCReg));
 
-					if (!copyStringFromUser(userFilenameAddr, filename, MaxFileLen)) {
-						kernel->machine->WriteRegister(2, -1); // Lỗi khi sao chép tên file
-						break;
+				/* set programm counter to next instruction (all Instructions are 4 byte wide)*/
+				kernel->machine->WriteRegister(PCReg, kernel->machine->ReadRegister(PCReg) + 4);
+				
+				/* set next programm counter for brach execution */
+				kernel->machine->WriteRegister(NextPCReg, kernel->machine->ReadRegister(PCReg)+4);
+				}
+
+				return;
+		
+				ASSERTNOTREACHED();
+				break;
+
+			//Create file
+			case SC_CreateFile:
+				int virtAddr; 
+				char* filename; 
+				DEBUG('a',"\n SC_Create call ..."); 
+				DEBUG('a',"\n Reading virtual address of filename"); 
+				virtAddr = kernel->machine->ReadRegister(4); 
+				DEBUG ('a',"\n Reading filename."); 
+				filename = User2System(virtAddr, MaxFileLength+1); 
+				if (filename == NULL) { 
+					printf("\n Not enough memory in system"); 
+					DEBUG('a',"\n Not enough memory in system"); 
+					kernel->machine->WriteRegister(2,-1); 
+					delete filename; 
+					return; 
+				} 
+				DEBUG('a',"\n Finish reading filename."); 	
+
+				if (!FileSystem->Create(filename, 0)) { 
+					printf("\n Error create file '%s'",filename); 
+					kernel->machine->WriteRegister(2, -1); 
+					delete filename; 
+					return; 
+				}
+				
+				kernel->machine->WriteRegister(2, 0);
+				delete filename; 
+				IncreasePC();
+				ASSERTNOTREACHED();
+				break;  
+
+			/*//Open file
+			case SC_Open:
+				int virtAddr2;
+				virtAddr2 = kernel->machine->ReadRegister(4);
+				int fileType;
+				fileType= kernel->machine->ReadRegister(5);
+				char* filename2;
+				filename2 = User2System(virtAddr2, MaxFileLength);
+
+				if (fileType != 0 || fileType != 1) {
+					kernel->machine->WriteRegister(2, -1);
+					break;
+				}
+
+				OpenFile* openedFile = FileSystem->Open(filename2);
+				if (openedFile != NULL) {
+					int fileDescriptor = -1;
+					for (int i = 2; i < MaxFileDescriptors; i++) {
+						if (fileTable[i] == NULL) {
+							fileDescriptor = i;
+							break;
+						}
 					}
-
-					// Check type của file
-					if (fileType != 0 && fileType != 1) {
-						kernel->machine->WriteRegister(2, -1); // Lỗi: Type không hợp lệ
-						break;
-					}
-
-					// Mở file từ Nachos FileSystem Object
-					OpenFile* openedFile = fileSystem->Open(filename);
-
-					if (openedFile != NULL) {
-						// Tìm một vị trí trống trong bảng file descriptor
-						int fileDescriptor = -1;
-						for (int i = 2; i < MaxFileDescriptors; i++) {
-							if (fileDescriptorTable[i].file == NULL) {
-								fileDescriptor = i;
-								break;
-							}
-						}
-
-						if (fileDescriptor == -1) {
-							kernel->machine->WriteRegister(2, -1); // Không còn chỗ trống trong bảng
-						}
-						else {
-							fileDescriptorTable[fileDescriptor].file = openedFile;
-							fileDescriptorTable[fileDescriptor].type = fileType;
-							kernel->machine->WriteRegister(2, fileDescriptor);
-						}
+					if (fileDescriptor == -1) {
+						kernel->machine->WriteRegister(2, -1); 
 					}
 					else {
-						kernel->machine->WriteRegister(2, -1); // Lỗi khi mở file
+						fileTable[fileDescriptor] = openedFile;
+						fileDescriptorTable[fileDescriptor] = fileType;
+						kernel->machine->WriteRegister(2, fileDescriptor);
 					}
+				}
+				else {
+					kernel->machine->WriteRegister(2, -1);
+				}
 
-					IncreasePC();
-					break;
+				IncreasePC();
+				break;
+			
+			//Close file
+			case SC_Close:
+				int fileDescriptor;
+				fileDescriptor = kernel->machine->ReadRegister(4);
 
-				// Close file
-				case SC_Close:
-					int fileDescriptor = kernel->machine->ReadRegister(4);
+				if (fileDescriptor >= 2 && fileDescriptor < MaxFileDescriptors && fileTable[fileDescriptor] != NULL) {
+					delete fileTable[fileDescriptor];
+					fileTable[fileDescriptor] = NULL;
+					fileDescriptorTable[fileDescriptor] = -1;
+					kernel->machine->WriteRegister(2, 0); 
+				}
+				else {
+					kernel->machine->WriteRegister(2, -1); 
+				}
 
-					if (fileDescriptor >= 2 && fileDescriptor < MaxFileDescriptors && fileDescriptorTable[fileDescriptor].file != NULL) {
-						delete fileDescriptorTable[fileDescriptor].file;
-						fileDescriptorTable[fileDescriptor].file = NULL;
-						fileDescriptorTable[fileDescriptor].type = -1;
-						kernel->machine->WriteRegister(2, 0); // Thành công : 0
-					}
-					else {
-						kernel->machine->WriteRegister(2, -1); // Lỗi : -1
-					}
+				break;*/
+				
+			default:
+				cerr << "Unexpected system call " << type << "\n";
+				break;
+       	}
+      	break;
 
-					IncreasePC();
-					break;
-
-				//
-				default:
-					cerr << "Unexpected system call " << type << "\n";
-					break;
-			}
-			break;
-
-		default:
-			cerr << "Unexpected user mode exception" << (int)which << "\n";
-			break;
+    default:
+      cerr << "Unexpected user mode exception" << (int)which << "\n";
+      break;
     }
     ASSERTNOTREACHED();
 }
